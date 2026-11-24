@@ -123,6 +123,9 @@ Measured through the proxy, mixed chat/code/agent prompts, `reasoning_effort: lo
 DSpark (MTP) adds +52% to +80% throughput from 4 concurrent requests up, and costs ~7% for a single user.
 Cold start takes about 5 minutes.
 
+**Memory:** ~49.5 GiB while active (cap `GPU_MEMORY_UTILIZATION=0.45`). After 15 minutes without API requests,
+every cache is wiped and memory drops to **~21.7 GiB** (weights + runtime). The next request wakes it in ~1.2 s.
+
 ## Tuning
 
 Everything is in `.env`. After changing it, run `scripts/up.sh`, which restarts the container.
@@ -134,7 +137,8 @@ Everything is in `.env`. After changing it, run `scripts/up.sh`, which restarts 
 | `PROXY_MAX_CONCURRENT_PER_KEY` | `64` | Per-key requests in flight (vLLM runs 32 at once and queues the rest) |
 | `PROXY_RATE_PER_IP` | `30r/s` | Per-IP rate; also throttles key guessing |
 | `PROXY_MAX_BODY` / `PROXY_READ_TIMEOUT` | `32m` / `3600s` | Request size cap (images count) and longest generation |
-| `GPU_MEMORY_UTILIZATION` | `0.75` | Share of the 128 GB unified memory. The box is shared and a unified-memory OOM can hang it, so leave headroom |
+| `GPU_MEMORY_UTILIZATION` | `0.45` | Cap while active (~55 GiB): one full 262K-token request, or 32 chat users. Raise it for several long documents at once. The box is shared and a unified-memory OOM can hang it, so leave headroom |
+| `CACHE_IDLE_MINUTES` | `15` | After this long with no API requests, every cache is wiped and the KV memory is released (down to weights + runtime). The next request waits for it to be re-reserved. `0` = never. Health checks don't count |
 | `MAX_NUM_SEQS` | `32` | Concurrent sequences; aggregate throughput still climbs at 32 |
 | `MAX_MODEL_LEN` | `262144` | Official Spark cap; 1M is possible with a bigger KV budget, but prefill at that size is very slow |
 | `MAX_NUM_BATCHED_TOKENS` | `8192` | Prefill chunk size. Use 2048 if a newer image hits the sm_121 shared-memory crash |
@@ -148,6 +152,8 @@ Everything is in `.env`. After changing it, run `scripts/up.sh`, which restarts 
 scripts/keys.sh list                           # who has access (add / rotate / revoke NAME)
 docker logs -f inkling-2-mini                  # vLLM logs
 docker logs -f inkling-proxy                   # access log: client name, path, status, latency (never keys)
+docker logs -f inkling-reaper                  # idle cache releases and wake-ups
+docker exec inkling-proxy wget -qO- http://reaper:8090/status   # released? idle seconds, wake count, last wake time
 docker stats --no-stream inkling-2-mini        # memory / CPU
 docker exec inkling-2-mini curl -s localhost:8000/metrics | grep -E '^vllm:(num_requests|kv_cache_usage|spec_decode)'
 scripts/bench.sh --concurrency 1,8,32          # benchmark (results/ is git-ignored)
@@ -180,6 +186,7 @@ nginx/inkling-server.inc.template  shared rules: key check, allowlist, SSE passt
 scripts/up.sh, down.sh       start/restart (creates secrets, memory preflight), and stop
 scripts/keys.sh              per-client API keys: add, rotate, revoke, list, show (each change verified live)
 scripts/funnel.sh            Tailscale Funnel on the host: enable, disable, status, public URL
+docker/cache_reaper.py       idle cache release + wake-on-request (runs in the inkling-reaper container)
 scripts/download-model.sh    pinned model download (runs as your uid, so the cache is yours)
 scripts/smoke-test.sh        security and functional checks of the OpenAI API surface
 scripts/bench.sh             concurrency sweep with realistic prompts

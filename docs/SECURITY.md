@@ -17,6 +17,8 @@ client / gateway ──▶ [TLS edge: tunnel or proxy] ──▶ nginx :8000 ─
 | Rate limits | Per key: 20 req/s (burst 40) and 64 concurrent requests. Per IP: 30 req/s, which also throttles key guessing because the key check runs after the limits | `PROXY_*` in `.env` |
 | Request limits | 32 MB body cap, 15 s header and 60 s body timeouts (slow-client protection), 1 h response timeout for long generations | `PROXY_MAX_BODY`, `PROXY_READ_TIMEOUT` |
 | vLLM isolation | vLLM publishes no port and sits on an `internal` Docker network with no route out, so it can't be reached from the LAN. A key holder also can't make it fetch URLs inside the corporate network (SSRF) | `compose.yaml` |
+| Maintenance endpoints | With `CACHE_IDLE_MINUTES > 0`, vLLM runs in dev mode so the cache reaper can pause it, release and wake its KV cache, and reset caches. These endpoints (`/pause`, `/release_kv_cache_memory`, `/wake_up`, `/reset_*_cache`, `/sleep`, …) **have no authentication**. Only the proxy and the reaper are on vLLM's internal network, and the proxy's allowlist never forwards them (404) | `docker/serve.sh`, `docker/cache_reaper.py` |
+| Cache lifetime | Prompt caches (prefix and image) are wiped, and KV memory is released, after `CACHE_IDLE_MINUTES` (default 15) with no API requests. A finished or disconnected request's KV is freed immediately in any case | `docker/cache_reaper.py` |
 | Container hardening | The proxy runs with a read-only root filesystem and `no-new-privileges`. Secrets are mounted read-only from `~/.config/inkling` (mode 700/600, outside the repo) | `compose.yaml` |
 
 Why not just vLLM's own `--api-key`? It checks the key only on `/v1/*` paths. Tested on 2026-11-24 against this

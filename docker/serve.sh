@@ -44,6 +44,14 @@ case "${SPEC_DECODE:-dspark}" in
   *) echo "serve.sh: SPEC_DECODE must be dspark or off, got '${SPEC_DECODE}'" >&2; exit 1 ;;
 esac
 
+# Idle cache release (docker/cache_reaper.py). Sleep mode lets vLLM drop its KV cache and re-reserve it on demand;
+# dev mode turns on the /release_kv_cache_memory, /wake_up and /reset_*_cache endpoints. Those have no auth, but
+# vLLM is reachable only on the internal network, and the proxy's allowlist never forwards them.
+if [[ "${CACHE_IDLE_MINUTES:-0}" =~ ^[0-9]+$ ]] && (( CACHE_IDLE_MINUTES > 0 )); then
+  args+=(--enable-sleep-mode)
+  export VLLM_SERVER_DEV_MODE=1
+fi
+
 # Free-form extra flags, split on whitespace (e.g. EXTRA_ARGS="--max-log-len 200").
 if [[ -n "${EXTRA_ARGS:-}" ]]; then
   read -r -a extra <<< "$EXTRA_ARGS"

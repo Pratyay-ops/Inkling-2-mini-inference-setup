@@ -51,8 +51,9 @@ Takeaways that shaped the defaults in `.env.example`:
 - **BF16 KV cache.** FP8 KV buys capacity we don't need at 262K and showed longer reasoning and a lower tool-eval score.
 - **262,144 context.** That is the official Spark cap; 1M works but prefill at that length takes ~26 min.
 - **Prefix caching on.** Gateways and agents resend long shared system prompts.
-- **Memory headroom.** A unified-memory OOM on GB10 can hang the box until a power cycle, so `0.75` utilization
-  leaves room for the other users of this machine.
+- **Memory headroom.** A unified-memory OOM on GB10 can hang the box until a power cycle. The first runs used
+  `0.75`; the default is now `0.45` (~55 GiB active), with idle cache release down to ~22 GiB (see BENCHMARKS.md),
+  which leaves far more room for the other users of this machine.
 
 A modified community checkpoint (sambit9238 "M2", attention re-quantized to NVFP4) reached 55.5 tok/s single
 stream, but MMLU-Pro dropped 0.637 → 0.574 and it needs a patched image. Not used.

@@ -74,8 +74,30 @@ temperature 1.0 / top-p 1.0.
 | Cold start (first run, empty compile cache) | 312 s: weights 93 s, then compile, autotune and CUDA graphs for model + drafter |
 | Warm restart (compile cache in `~/.cache/inkling/vllm`) | 214 s (DSpark off) |
 | Weights in memory | 19.15 GiB |
-| KV cache | 645,084 tokens (2.46× the 262,144-token maximum context) |
-| vLLM cap at 0.75 utilization | 91.27 GiB, leaving ~20 GiB available to the rest of the box |
+| KV cache at 0.75 (first runs) | 645,084 tokens (2.46× the 262,144-token maximum context), vLLM ~87-90 GiB |
+| KV cache at **0.45 (current default)** | 277,440 tokens (1.06× the maximum context), 27.14 GiB |
+
+## Memory states (0.45 cap, idle cache release)
+
+Measured 2026-11-24 with `nvidia-smi` and `/proc/meminfo`:
+
+| State | vLLM memory | Box memory available |
+|---|---|---|
+| Active (KV pool reserved) | 49.5 GiB | 59 GiB |
+| **Idle**: after `CACHE_IDLE_MINUTES`, caches cleared and KV released | **21.7 GiB** (weights + runtime) | **86 GiB** |
+| First request after idle | wakes in **1.1-1.2 s**, then back to 49.5 GiB | 59 GiB |
+
+How memory behaves under load (0.75 cap, KV pool 64 GiB, unique ~2.2K-token prompts):
+- **Process memory stays flat:** 87.2 GiB idle, 89.6 GiB with 32 concurrent requests (+2.4 GiB of scratch,
+  kept for reuse). More requests than fit wait in a queue; memory never grows past the cap.
+- **Inside the pool, steady state:** 32 conversations generating together used 18.4% (11.8 GiB, ~0.37 GiB each),
+  with 0 queued and 0 preempted.
+- **During prefill** (prompt being read), usage spikes, because every layer holds the whole prompt until the
+  20 local (1,024-token sliding-window) layers drop what's outside their window. 31 new prompts at once
+  peaked at 39% (~25 GiB). One ~35K-token prompt peaked at 17.8 GiB.
+
+Throughput at the 0.45 cap with sleep mode on (same method as above, 2 requests per thread):
+C1 32.5 tok/s, C8 134.7, C32 304.0, all within the noise of the 0.75 runs (35.5 / 138.2 / 317.9). 0 errors.
 
 ## Reproduce
 

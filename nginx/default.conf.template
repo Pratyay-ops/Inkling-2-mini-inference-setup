@@ -31,6 +31,12 @@ upstream inkling_vllm {
     keepalive 64;
 }
 
+upstream inkling_reaper {
+    zone inkling_reaper 64k;
+    server reaper:8090 resolve;
+    keepalive 16;
+}
+
 # Published listener (scripts/up.sh: BIND_ADDRESS:PORT). X-Forwarded-For from clients is ignored here.
 server {
     listen 8080;

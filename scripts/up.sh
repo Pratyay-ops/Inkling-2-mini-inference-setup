@@ -62,6 +62,22 @@ fi
 log "starting $VLLM_IMAGE behind $PROXY_IMAGE"
 compose up -d
 
+# Bind-mounted files are read only when their container starts (nginx renders its templates then), and compose
+# doesn't notice when they change. Restart a container if any of its files is newer than its start time.
+restart_if_changed() {
+  local container="$1" started newest
+  shift
+  started="$(date -d "$(docker inspect -f '{{.State.StartedAt}}' "$container")" +%s)"
+  newest="$(stat -c %Y "$@" | sort -n | tail -1)"
+  if (( newest > started )); then
+    log "$container: config files changed since it started; restarting it"
+    docker restart "$container" >/dev/null
+  fi
+}
+restart_if_changed inkling-2-mini "$REPO_ROOT/docker/serve.sh"
+restart_if_changed inkling-reaper "$REPO_ROOT/docker/cache_reaper.py"
+restart_if_changed inkling-proxy "$REPO_ROOT"/nginx/*.template
+
 # --- Wait for readiness (through the proxy, so the whole path is checked) ----------------------
 url="$(local_base_url)"
 deadline=$(( SECONDS + 30 * 60 ))

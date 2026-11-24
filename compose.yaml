@@ -36,9 +36,10 @@ services:
       MAX_MODEL_LEN: ${MAX_MODEL_LEN:-262144}
       MAX_NUM_SEQS: ${MAX_NUM_SEQS:-32}
       MAX_NUM_BATCHED_TOKENS: ${MAX_NUM_BATCHED_TOKENS:-8192}
-      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION:-0.75}
+      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION:-0.45}
       KV_CACHE_DTYPE: ${KV_CACHE_DTYPE:-auto}
       SPEC_DECODE: ${SPEC_DECODE:-dspark}
+      CACHE_IDLE_MINUTES: ${CACHE_IDLE_MINUTES:-15}
       EXTRA_ARGS: ${EXTRA_ARGS:-}
     volumes:
       - ./docker/serve.sh:/opt/inkling/serve.sh:ro
@@ -61,7 +62,7 @@ services:
     image: ${PROXY_IMAGE:?set PROXY_IMAGE in .env}
     container_name: inkling-proxy
     restart: unless-stopped
-    depends_on: [vllm]
+    depends_on: [vllm, reaper]
     networks: [frontend, backend]
     ports:
       # Docker-published ports bypass ufw. BIND_ADDRESS=127.0.0.1 keeps it local-only.
@@ -91,6 +92,30 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20m
+    logging: *logging
+
+  # Wipes vLLM's caches after CACHE_IDLE_MINUTES without API requests and wakes it on the next one
+  # (docker/cache_reaper.py). nginx asks it before forwarding each API request; /health doesn't count.
+  reaper:
+    image: ${REAPER_IMAGE:?set REAPER_IMAGE in .env}
+    container_name: inkling-reaper
+    restart: unless-stopped
+    depends_on: [vllm]
+    networks: [backend]
+    user: "65534:65534"
+    command: ["python3", "-I", "/opt/inkling/cache_reaper.py"]
+    environment:
+      CACHE_IDLE_MINUTES: ${CACHE_IDLE_MINUTES:-15}
+      VLLM_URL: http://vllm:8000
+    volumes:
+      - ./docker/cache_reaper.py:/opt/inkling/cache_reaper.py:ro
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/status', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     logging: *logging
 
 networks:
