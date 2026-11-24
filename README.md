@@ -59,6 +59,8 @@ model_list:
 ```
 
 Any OpenAI SDK works too: `OpenAI(base_url="https://inkling.<your-tailnet>.ts.net/v1", api_key=...)`.
+LangChain: [examples/langchain_quickstart.py](examples/langchain_quickstart.py) shows a plain call, streaming and
+tool calling (`pip install langchain-openai`).
 
 ### Public access ($0, Tailscale Funnel)
 
