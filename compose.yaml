@@ -1,0 +1,124 @@
+# Inkling 2 Mini on one DGX Spark / GB10 (MSI EdgeXpert): vLLM behind an nginx auth proxy.
+# All tunables live in .env (copy .env.example). Start with scripts/up.sh, not `docker compose up`
+# directly, so secrets are created and the memory preflight runs first.
+#
+#   client ──▶ proxy :PORT (per-client keys, allowlist, limits) ──backend net──▶ vllm :8000 (internal key)
+#
+# vllm publishes no port and sits only on an internal network with no route out: it can't be reached
+# from the LAN, and it can't be used to fetch URLs inside the corporate network (no SSRF via image_url).
+name: inkling
+
+services:
+  vllm:
+    image: ${VLLM_IMAGE:?set VLLM_IMAGE in .env}
+    container_name: inkling-2-mini
+    restart: unless-stopped
+    gpus: all
+    ipc: host
+    shm_size: 16gb
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    networks: [backend]
+    entrypoint: ["bash", "/opt/inkling/serve.sh"]
+    secrets:
+      - source: internal_key
+        target: api_key
+    environment:
+      HF_HOME: /hf
+      HF_HUB_OFFLINE: "1"
+      VLLM_CACHE_ROOT: /vllm-cache
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      MODEL_ID: ${MODEL_ID:-thinkingmachines/Inkling-2-Mini}
+      MODEL_REVISION: ${MODEL_REVISION:?set MODEL_REVISION in .env}
+      SERVED_MODEL_NAME: ${SERVED_MODEL_NAME:-inkling-2-mini}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-262144}
+      MAX_NUM_SEQS: ${MAX_NUM_SEQS:-32}
+      MAX_NUM_BATCHED_TOKENS: ${MAX_NUM_BATCHED_TOKENS:-8192}
+      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION:-0.75}
+      KV_CACHE_DTYPE: ${KV_CACHE_DTYPE:-auto}
+      SPEC_DECODE: ${SPEC_DECODE:-dspark}
+      EXTRA_ARGS: ${EXTRA_ARGS:-}
+    volumes:
+      - ./docker/serve.sh:/opt/inkling/serve.sh:ro
+      - ${HF_HOME_DIR:?set HF_HOME_DIR in .env}:/hf:ro
+      - ${VLLM_CACHE_DIR:?set VLLM_CACHE_DIR in .env}:/vllm-cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Cold start is ~4-7 min (weights, torch.compile, CUDA graphs for target + DSpark drafter).
+      start_period: 20m
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  proxy:
+    image: ${PROXY_IMAGE:?set PROXY_IMAGE in .env}
+    container_name: inkling-proxy
+    restart: unless-stopped
+    depends_on: [vllm]
+    networks: [frontend, backend]
+    ports:
+      # Docker-published ports bypass ufw. BIND_ADDRESS=127.0.0.1 keeps it local-only (e.g. behind a tunnel).
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8080"
+    environment:
+      NGINX_ENVSUBST_FILTER: "^PROXY_"
+      PROXY_RATE_PER_KEY: ${PROXY_RATE_PER_KEY:-20r/s}
+      PROXY_BURST_PER_KEY: ${PROXY_BURST_PER_KEY:-40}
+      PROXY_MAX_CONCURRENT_PER_KEY: ${PROXY_MAX_CONCURRENT_PER_KEY:-64}
+      PROXY_RATE_PER_IP: ${PROXY_RATE_PER_IP:-30r/s}
+      PROXY_MAX_BODY: ${PROXY_MAX_BODY:-32m}
+      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-3600s}
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # Directory mount (not single files) so key changes from scripts/keys.sh are seen on reload.
+      - ${SECRETS_DIR:?set SECRETS_DIR in .env}/nginx:/etc/nginx/inkling:ro
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /etc/nginx/conf.d, /tmp]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20m
+    logging: *logging
+
+  # Public HTTPS via Tailscale Funnel (opt-in: PUBLIC_ACCESS=tailscale-funnel in .env).
+  # Outbound-only: nothing listens on the LAN. TLS terminates here, on this box, with a Let's Encrypt
+  # cert for <TS_HOSTNAME>.<tailnet>.ts.net, so Tailscale's relays only see encrypted traffic.
+  # Shares the proxy's network namespace, so it reaches nginx at 127.0.0.1:8080, and nginx trusts
+  # X-Forwarded-For (the real client IP, used for per-IP limits) only from 127.0.0.1.
+  tailscale:
+    image: ${TS_IMAGE:-tailscale/tailscale:stable}
+    container_name: inkling-tailscale
+    profiles: [funnel]
+    restart: unless-stopped
+    network_mode: "service:proxy"
+    depends_on: [proxy]
+    environment:
+      TS_HOSTNAME: ${TS_HOSTNAME:-inkling}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_AUTH_ONCE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - ./tailscale/serve.json:/config/serve.json:ro
+      # Node identity (keys). Lives with the other secrets, outside the repo.
+      - ${SECRETS_DIR:?set SECRETS_DIR in .env}/tailscale:/var/lib/tailscale
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+networks:
+  frontend: {}
+  backend:
+    internal: true
+
+secrets:
+  internal_key:
+    file: ${SECRETS_DIR:?set SECRETS_DIR in .env}/internal-key

@@ -1,0 +1,12 @@
+# Local config and secrets
+.env
+*.key
+api-key
+
+# Benchmark output
+results/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
