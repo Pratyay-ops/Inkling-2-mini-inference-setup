@@ -30,15 +30,7 @@ load_env() {
   set +a
 }
 
-compose() {
-  local profiles=()
-  case "${PUBLIC_ACCESS:-none}" in
-    none) ;;
-    tailscale-funnel) profiles=(--profile funnel) ;;
-    *) die "PUBLIC_ACCESS must be none or tailscale-funnel, got '${PUBLIC_ACCESS}'" ;;
-  esac
-  docker compose --project-directory "$REPO_ROOT" --env-file "$ENV_FILE" "${profiles[@]}" "$@"
-}
+compose() { docker compose --project-directory "$REPO_ROOT" --env-file "$ENV_FILE" "$@"; }
 
 # URL the host can use to reach the API (0.0.0.0 is not connectable).
 local_base_url() {

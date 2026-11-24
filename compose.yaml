@@ -64,8 +64,11 @@ services:
     depends_on: [vllm]
     networks: [frontend, backend]
     ports:
-      # Docker-published ports bypass ufw. BIND_ADDRESS=127.0.0.1 keeps it local-only (e.g. behind a tunnel).
+      # Docker-published ports bypass ufw. BIND_ADDRESS=127.0.0.1 keeps it local-only.
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8080"
+      # Funnel ingress for the host's Tailscale (scripts/funnel.sh). Always localhost-only: this listener
+      # trusts X-Forwarded-For so per-IP limits see real public callers.
+      - "127.0.0.1:${FUNNEL_PORT:-8001}:8081"
     environment:
       NGINX_ENVSUBST_FILTER: "^PROXY_"
       PROXY_RATE_PER_KEY: ${PROXY_RATE_PER_KEY:-20r/s}
@@ -75,7 +78,8 @@ services:
       PROXY_MAX_BODY: ${PROXY_MAX_BODY:-32m}
       PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-3600s}
     volumes:
-      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # Both templates (main config + shared server body) are rendered by the image's envsubst step.
+      - ./nginx:/etc/nginx/templates:ro
       # Directory mount (not single files) so key changes from scripts/keys.sh are seen on reload.
       - ${SECRETS_DIR:?set SECRETS_DIR in .env}/nginx:/etc/nginx/inkling:ro
     read_only: true
@@ -87,31 +91,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20m
-    logging: *logging
-
-  # Public HTTPS via Tailscale Funnel (opt-in: PUBLIC_ACCESS=tailscale-funnel in .env).
-  # Outbound-only: nothing listens on the LAN. TLS terminates here, on this box, with a Let's Encrypt
-  # cert for <TS_HOSTNAME>.<tailnet>.ts.net, so Tailscale's relays only see encrypted traffic.
-  # Shares the proxy's network namespace, so it reaches nginx at 127.0.0.1:8080, and nginx trusts
-  # X-Forwarded-For (the real client IP, used for per-IP limits) only from 127.0.0.1.
-  tailscale:
-    image: ${TS_IMAGE:-tailscale/tailscale:stable}
-    container_name: inkling-tailscale
-    profiles: [funnel]
-    restart: unless-stopped
-    network_mode: "service:proxy"
-    depends_on: [proxy]
-    environment:
-      TS_HOSTNAME: ${TS_HOSTNAME:-inkling}
-      TS_STATE_DIR: /var/lib/tailscale
-      TS_USERSPACE: "true"
-      TS_AUTH_ONCE: "true"
-      TS_SERVE_CONFIG: /config/serve.json
-    volumes:
-      - ./tailscale/serve.json:/config/serve.json:ro
-      # Node identity (keys). Lives with the other secrets, outside the repo.
-      - ${SECRETS_DIR:?set SECRETS_DIR in .env}/tailscale:/var/lib/tailscale
-    security_opt: ["no-new-privileges:true"]
     logging: *logging
 
 networks:

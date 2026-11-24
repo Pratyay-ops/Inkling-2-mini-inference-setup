@@ -32,7 +32,7 @@ Both containers restart on reboot (`restart: unless-stopped`) until you run `scr
 
 | Setting | Value |
 |---|---|
-| Base URL | Public: `https://<TS_HOSTNAME>.<your-tailnet>.ts.net/v1` with Tailscale Funnel (`scripts/funnel.sh url` prints it). Local: `http://127.0.0.1:8000/v1`. LAN: `http://<this-host>:8000/v1` with `BIND_ADDRESS=0.0.0.0` |
+| Base URL | Public: `https://<node>.<your-tailnet>.ts.net/v1` with Tailscale Funnel (`scripts/funnel.sh url` prints it). Local: `http://127.0.0.1:8000/v1`. LAN: `http://<this-host>:8000/v1` with `BIND_ADDRESS=0.0.0.0` |
 | API key | A per-client key from `scripts/keys.sh add <name>`, sent as `Authorization: Bearer sk-inkling-…` |
 | Model | `inkling-2-mini` |
 | Endpoints | `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/models`, plus `/health` (no key). Everything else returns 404 |
@@ -62,19 +62,33 @@ Any OpenAI SDK works too: `OpenAI(base_url="https://inkling.<your-tailnet>.ts.ne
 
 ### Public access ($0, Tailscale Funnel)
 
-This gives a public `https://<TS_HOSTNAME>.<your-tailnet>.ts.net` URL with a real certificate. It opens no
-inbound ports, and nothing is exposed on the LAN: the Tailscale container only makes outbound connections.
-TLS ends on this box, so Tailscale's relays carry only encrypted traffic. The per-client keys, allowlist and
-rate limits all still apply, and the limits see each caller's real IP.
+The host's Tailscale publishes the proxy at `https://<node>.<tailnet>.ts.net` with a Let's Encrypt
+certificate. It opens no inbound ports and exposes nothing on the LAN, because Tailscale only makes outbound
+connections. TLS ends on this box, so Tailscale's relays carry only encrypted traffic. The proxy serves
+Funnel on its own listener, `127.0.0.1:8001`, which reads the caller's real IP from Tailscale; per-client
+keys, the allowlist and rate limits all apply.
 
-1. Set `PUBLIC_ACCESS=tailscale-funnel` in `.env` and run `scripts/up.sh`. Only the Tailscale container is
-   added; vLLM keeps running.
-2. Open the sign-in link it prints in **any** browser, e.g. on your laptop; you don't need to be at the box.
-   `scripts/funnel.sh login` prints the link again.
-3. `scripts/funnel.sh status` shows whether Funnel is live, and `scripts/funnel.sh url` prints the base URL for your gateway.
+One-time setup. The `sudo` steps run in a terminal on the box; the links open in any browser, e.g. your laptop:
 
-The free Personal plan is licensed for non-commercial use; see [docs/SECURITY.md](docs/SECURITY.md) for the
-other options and their costs.
+```bash
+sudo tailscale login                      # sign the machine in (free Personal plan)
+sudo tailscale set --hostname=inkling     # URL becomes https://inkling.<tailnet>.ts.net
+sudo tailscale set --operator=$USER       # lets scripts/funnel.sh manage Funnel without sudo
+# set PUBLIC_ACCESS=tailscale-funnel in .env, then:
+scripts/funnel.sh enable                  # the first time, prints a link to enable HTTPS + Funnel for your tailnet
+scripts/funnel.sh url                     # base URL for your gateway
+```
+
+Funnel's configuration lives in `tailscaled`, so it survives reboots. `scripts/funnel.sh disable` turns it off.
+
+- **Rename the node before enabling Funnel.** Funnel certificates are published in public Certificate
+  Transparency logs, so the default name (the machine's hostname) becomes public. Scanners watch those logs:
+  unknown hosts were probing the URL within minutes of it going live. Every probe got a 404 or 401.
+- **Latency.** Requests travel through Tailscale's Funnel ingress and back. Measured here: ~1.4 s for a *new*
+  connection (TLS ends on the box, so the handshake crosses the whole path), versus ~0.2 s locally. Keep-alive
+  connections, the default in most gateways and SDKs, pay this once. Streaming speed is unaffected.
+- The free Personal plan is licensed for non-commercial use. See [docs/SECURITY.md](docs/SECURITY.md) for the
+  other options and their costs.
 
 ### Request tips
 
@@ -156,14 +170,14 @@ Once Inkling support lands in a vLLM release, move to a release tag.
 ## Layout
 
 ```
-compose.yaml                 vllm (GPU, internal network only) + proxy (published port), healthchecks, restart policy
+compose.yaml                 vllm (GPU, internal network only) + proxy (localhost ports), healthchecks, restart policy
 .env.example                 every tunable, with the reasoning behind each default
 docker/serve.sh              vLLM entrypoint: .env -> vllm serve flags; refuses to start without its key
-nginx/default.conf.template  proxy: key check, allowlist, limits, SSE passthrough, JSON errors
+nginx/default.conf.template  proxy: key map, limits, upstream, two listeners (:8080 published, :8081 Funnel)
+nginx/inkling-server.inc.template  shared rules: key check, allowlist, SSE passthrough, JSON errors
 scripts/up.sh, down.sh       start/restart (creates secrets, memory preflight), and stop
 scripts/keys.sh              per-client API keys: add, rotate, revoke, list, show (each change verified live)
-scripts/funnel.sh            Tailscale Funnel: sign-in link, status, public URL
-tailscale/serve.json         Funnel config: HTTPS :443 on the ts.net name -> nginx on 127.0.0.1:8080
+scripts/funnel.sh            Tailscale Funnel on the host: enable, disable, status, public URL
 scripts/download-model.sh    pinned model download (runs as your uid, so the cache is yours)
 scripts/smoke-test.sh        security and functional checks of the OpenAI API surface
 scripts/bench.sh             concurrency sweep with realistic prompts

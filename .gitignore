@@ -3,8 +3,10 @@
 *.key
 api-key
 
-# Benchmark output
+# Benchmark output and local logs
 results/
+*.log
+logs.txt
 
 # Python
 __pycache__/

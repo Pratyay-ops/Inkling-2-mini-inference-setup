@@ -17,10 +17,6 @@ load_env
 #   nginx/clients.map         per-client keys (scripts/keys.sh)
 mkdir -p "$SECRETS_DIR/nginx"
 chmod 700 "$SECRETS_DIR" "$SECRETS_DIR/nginx"
-if [[ "${PUBLIC_ACCESS:-none}" == "tailscale-funnel" ]]; then
-  mkdir -p "$SECRETS_DIR/tailscale"   # Tailscale node keys
-  chmod 700 "$SECRETS_DIR/tailscale"
-fi
 if [[ ! -s "$SECRETS_DIR/internal-key" ]]; then
   (umask 077 && openssl rand -hex 32 > "$SECRETS_DIR/internal-key")
   log "generated internal vLLM key"
@@ -96,8 +92,6 @@ cat <<EOF
   Smoke test      : scripts/smoke-test.sh
 EOF
 if [[ "${PUBLIC_ACCESS:-none}" == "tailscale-funnel" ]]; then
-  sleep 5   # let tailscaled come up and either log in or print its sign-in link
   echo
   "$REPO_ROOT/scripts/funnel.sh" status || true
-  "$REPO_ROOT/scripts/funnel.sh" login || true
 fi

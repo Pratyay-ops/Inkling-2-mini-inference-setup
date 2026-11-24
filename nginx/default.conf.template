@@ -21,111 +21,29 @@ limit_conn_zone $inkling_client     zone=inkling_conn_per_key:10m;
 log_format inkling '$remote_addr client=$inkling_client [$time_iso8601] "$request_method $uri" '
                    '$status $body_bytes_sent rt=$request_time urt=$upstream_response_time rid=$request_id';
 
+# Re-resolve "vllm" through Docker's DNS: a recreated vLLM container can come back with a different IP,
+# and the proxy should follow it (and start even while vLLM is down) instead of pinning the first address.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
 upstream inkling_vllm {
-    server vllm:8000;
+    zone inkling_vllm 64k;
+    server vllm:8000 resolve;
     keepalive 64;
 }
 
+# Published listener (scripts/up.sh: BIND_ADDRESS:PORT). X-Forwarded-For from clients is ignored here.
 server {
     listen 8080;
-    server_tokens off;
+    include /etc/nginx/conf.d/inkling-server.inc;
+}
 
-    # Tailscale Funnel (same network namespace) is the only thing that connects from 127.0.0.1, so trust
-    # its X-Forwarded-For for the real client IP. Host connections come from the Docker gateway and can't set it.
-    set_real_ip_from 127.0.0.1;
+# Tailscale Funnel ingress, published only on 127.0.0.1:FUNNEL_PORT for the host's tailscaled. It puts the
+# real caller's IP in X-Forwarded-For, which this listener trusts so per-IP limits see real clients.
+# (A local user on this box could also set that header here, but still needs a valid key.)
+server {
+    listen 8081;
+    set_real_ip_from 0.0.0.0/0;
+    set_real_ip_from ::/0;
     real_ip_header X-Forwarded-For;
-    access_log /dev/stdout inkling;
-
-    client_max_body_size ${PROXY_MAX_BODY};
-    client_header_timeout 15s;
-    client_body_timeout 60s;
-    keepalive_timeout 75s;
-
-    limit_req_status 429;
-    limit_conn_status 429;
-    limit_req_log_level warn;
-    limit_conn_log_level warn;
-    limit_req zone=inkling_per_ip burst=40 nodelay;
-
-    default_type application/json;
-    add_header X-Request-Id $request_id always;
-    # OpenAI-style JSON errors, so gateways and SDKs can parse every failure.
-    error_page 401 = @unauthorized;
-    error_page 403 = @method_not_allowed;
-    error_page 413 = @too_large;
-    error_page 429 = @rate_limited;
-    error_page 502 503 504 = @upstream_down;
-
-    # Liveness for gateways and load balancers: no key, no model access.
-    location = /health {
-        access_log off;
-        proxy_pass http://inkling_vllm/health;
-    }
-
-    # The only API surface exposed. Everything else vLLM serves (/metrics, /tokenize, /invocations,
-    # /pooling, /score, ...) is unreachable from outside, whether or not vLLM would check a key there.
-    location ~ ^/v1/(chat/completions|completions|responses|models(/[A-Za-z0-9._:-]+)?)$ {
-        limit_except GET POST { deny all; }
-        limit_req zone=inkling_per_ip burst=40 nodelay;
-        limit_req zone=inkling_per_key burst=${PROXY_BURST_PER_KEY} nodelay;
-        limit_conn inkling_conn_per_key ${PROXY_MAX_CONCURRENT_PER_KEY};
-        # Access phase runs after the limits above, so failed key guesses are rate limited too.
-        auth_request /_inkling_auth;
-
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Request-Id $request_id;
-        proxy_set_header X-Inkling-Client $inkling_client;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        # Replaces the client's key with the internal one.
-        include /etc/nginx/inkling/upstream-auth.conf;
-
-        # Server-sent events: pass tokens through as they arrive.
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout ${PROXY_READ_TIMEOUT};
-        proxy_send_timeout 300s;
-        # Forward the normalized path the allowlist matched, not the raw one, so nginx and vLLM can't
-        # disagree about which route a %-encoded request means.
-        proxy_pass http://inkling_vllm$uri$is_args$args;
-    }
-
-    location = /_inkling_auth {
-        internal;
-        if ($inkling_client = "") {
-            return 401;
-        }
-        return 204;
-    }
-
-    location @unauthorized {
-        add_header WWW-Authenticate 'Bearer realm="inkling"' always;
-        add_header X-Request-Id $request_id always;
-        return 401 '{"error":{"message":"Invalid or missing API key","type":"invalid_request_error","code":"invalid_api_key"}}\n';
-    }
-
-    location @rate_limited {
-        add_header Retry-After 1 always;
-        add_header X-Request-Id $request_id always;
-        return 429 '{"error":{"message":"Rate limit exceeded for this key","type":"rate_limit_error","code":"rate_limit_exceeded"}}\n';
-    }
-
-    location @method_not_allowed {
-        return 405 '{"error":{"message":"Method not allowed","type":"invalid_request_error","code":"method_not_allowed"}}\n';
-    }
-
-    location @too_large {
-        return 413 '{"error":{"message":"Request body too large","type":"invalid_request_error","code":"request_too_large"}}\n';
-    }
-
-    location @upstream_down {
-        add_header Retry-After 30 always;
-        add_header X-Request-Id $request_id always;
-        return 503 '{"error":{"message":"Model server is starting or unavailable","type":"server_error","code":"upstream_unavailable"}}\n';
-    }
-
-    location / {
-        return 404 '{"error":{"message":"Not found","type":"invalid_request_error","code":"not_found"}}\n';
-    }
+    include /etc/nginx/conf.d/inkling-server.inc;
 }

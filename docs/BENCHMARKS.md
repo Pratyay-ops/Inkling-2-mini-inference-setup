@@ -38,6 +38,35 @@ Measured 2026-11-24 **through the nginx proxy**, so the numbers include the auth
 - At C32, 318 tok/s is above the best published single-Spark figure for the official weights (244 tok/s,
   sambit9238, with different prompts and settings; see [ENGINE_SELECTION.md](ENGINE_SELECTION.md)).
 
+## vLLM vs Unsloth's engine (GGUF)
+
+Same harness, prompts and settings, measured 2026-11-24 directly against each server on this box (vLLM through
+the proxy, whose hop costs well under a millisecond). Unsloth engine: their llama.cpp fork `b12649-mix-c7059d6`,
+prebuilt `linux-arm64-cuda13-portable` (sha256 verified; sm_121 supported), recommended `UD-Q4_K_XL` GGUF
+(17.6 GB), DSpark drafter at their tuned depth 2, `-np 32` with unified KV, `-c 262144`, `--reasoning-effort low`,
+temperature 1.0 / top-p 1.0.
+
+| Concurrency | vLLM + DSpark: aggregate tok/s | per stream | TTFT p50 | Unsloth + DSpark: aggregate tok/s | per stream | TTFT p50 | vLLM vs Unsloth |
+|---|---|---|---|---|---|---|---|
+| 1 | 35.5 | 36.8 | 0.20 s | 36.2 | 37.3 | 0.19 s | tie |
+| 4 | 88.8 | 25.2 | 0.36 s | 63.8 | 18.3 | 0.67 s | +39% |
+| 8 | 138.2 | 19.3 | 0.44 s | 81.1 | 12.4 | 1.17 s | +70% |
+| 16 | 198.2 | 15.3 | 3.04 s | 106.0 | 9.1 | 1.45 s | +87% |
+| 32 | **317.9** | 13.1 | 3.20 s | 86.0 | 3.3 | 4.36 s | **3.7×** |
+
+0 errors on either. Unsloth DSpark acceptance: 54.1% of drafted tokens.
+
+**Reading it:**
+- **One user:** a tie. Unsloth's "1.9× faster" compares their build with their previous build and mainline
+  llama.cpp on B200 and RTX PRO 6000. It is not a comparison with vLLM, and on GB10 it doesn't show up as a
+  lead over vLLM.
+- **Concurrent users:** vLLM pulls away, and Unsloth's aggregate falls at 32 (below its 16-request figure).
+  That's the gateway case, so **vLLM stays**.
+- **Where Unsloth wins:** startup in **~17 s** (vLLM 3.5-5 min) and a smaller download (17.6 vs 20.2 GB). It's a
+  good fit for a single-user desktop or for fast iteration.
+- **Quality was not measured here.** UD-Q4_K_XL re-quantizes weights that ship natively in NVFP4. Unsloth reports
+  KLD 0.0107 against their Q8 GGUF, not against the original checkpoint.
+
 ## Startup and memory
 
 | | |

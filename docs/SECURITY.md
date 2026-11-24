@@ -42,14 +42,21 @@ cannot download `http(s)://` image URLs. OpenAI SDKs and most gateways already s
 Plain HTTP is acceptable on localhost or a trusted LAN, but **anything crossing the internet needs TLS**, or
 keys and prompts travel in the clear.
 
-**Implemented: Tailscale Funnel** (`PUBLIC_ACCESS=tailscale-funnel`, see the README's "Public access" section).
-- The Tailscale container makes only outbound connections; no inbound port is opened and nothing listens on the LAN.
-- It holds a Let's Encrypt certificate for `<TS_HOSTNAME>.<tailnet>.ts.net` and terminates TLS **on this box**,
-  so Tailscale's relays carry only encrypted bytes.
-- It shares nginx's network namespace and connects from `127.0.0.1`. nginx trusts `X-Forwarded-For` only from
-  `127.0.0.1`, so per-IP limits apply to each real caller, and nobody else can spoof that header.
-- Its node keys live in `~/.config/inkling/tailscale` (mode 700). Sign-in happens through a browser link, so
-  no auth key is stored anywhere.
+**Implemented: Tailscale Funnel** on the host's `tailscaled` (`scripts/funnel.sh`; see the README's "Public access").
+Verified on 2026-11-24 over the public path:
+- The host makes only outbound connections; no inbound port is opened and nothing listens on the LAN.
+- `tailscaled` holds a Let's Encrypt certificate for `<node>.<tailnet>.ts.net` and terminates TLS 1.3
+  **on this box**, so Tailscale's relays carry only encrypted bytes.
+- It forwards to the proxy's Funnel listener, published only on `127.0.0.1:8001`. That listener trusts
+  `X-Forwarded-For`, so per-IP limits apply to each real caller (the log showed the caller's public IP). The
+  main listener ignores the header. A local user on this box could set it on `:8001`, but would still need a key.
+- Public results: `/health` 200; `/v1/models` 401 without a key; `/metrics` and `/invocations` 404 even with a key.
+- **Funnel names are public.** Their certificates appear in Certificate Transparency logs, and an unknown host
+  was probing the URL within minutes of it going live. Name the node something neutral
+  (`sudo tailscale set --hostname=inkling`) rather than the machine's hostname. Treat the URL as public, never
+  as a secret: the keys are what protect it.
+- `--operator=$USER` lets that user change this machine's Tailscale settings without sudo. Only grant it to
+  the box's admin.
 
 The alternatives considered, cheapest first:
 

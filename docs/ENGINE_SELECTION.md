@@ -25,6 +25,7 @@ looped architecture, so they cannot serve this model, however fast they are on Q
 | NInfer / ninfer-gb10 / Infernix | Qwen3.5-3.8 only; no Inkling or looped-model support | Fork READMEs | Not applicable |
 | Basalt (and the `basalt-arm-sm121` ports) | Qwen3.8 MoE only; upstream has no sm_121 support yet | GitHub issues, NVIDIA forum | Not applicable |
 | Strata | Qwen3.8-Flash-Next expert offload; no GB10 or Inkling numbers | Blog mentions only | Not applicable |
+| Unsloth's engine (llama.cpp fork `b12649-mix-c7059d6`, UD-Q4_K_XL GGUF + DSpark) | Runs on GB10 (sm_121 prebuilt) | **Measured on this box:** ties vLLM at 1 user (36 tok/s), 3.7× slower at 32 users (86 vs 318 tok/s); 17 s startup | Good for single-user or desktop use; not for a multi-user gateway. See [BENCHMARKS.md](BENCHMARKS.md) |
 | Ollama / LM Studio / MLX | Consumer runtimes; MLX-Serve didn't run it at launch | HN | Not suited to a multi-user gateway backend |
 
 ## What the GB10 measurements say (vLLM, official weights)
